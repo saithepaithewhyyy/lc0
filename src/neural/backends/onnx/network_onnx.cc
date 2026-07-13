@@ -48,11 +48,14 @@
 #include "neural/loader.h"
 #include "neural/network.h"
 #include "neural/onnx/converter.h"
+#include "neural/shared_params.h"
 #include "onnxruntime_cxx_api.h"
+#include "proto/onnx.pb.h"
 #include "utils/bf16_utils.h"
 #include "utils/bititer.h"
 #include "utils/commandline.h"
 #include "utils/exception.h"
+#include "utils/files.h"
 #include "utils/fp16_utils.h"
 #include "utils/logging.h"
 #include "utils/trace.h"
@@ -209,6 +212,9 @@ class OnnxNetwork final : public Network {
   // The lower limit for variable batch size.
   int min_batch_size_;
   int gpu_;
+  // trt cache directory and flag for trt EPcontext model
+  std::string cache_dir_;
+  bool is_ep_context_;
   static constexpr int max_batch_size_ = 1024;
   // For conditional locking if running the DML/ROCM/TRT provider.
   OnnxProvider provider_;
@@ -687,6 +693,9 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_max_partition_iterations"] = "1000";
       trt_options["trt_min_subgraph_size"] = "1";
       trt_options["trt_engine_cache_enable"] = "1";
+      trt_options["trt_dump_ep_context_model"] = "1";
+      trt_options["trt_ep_context_file_path"] = cache_dir;
+      trt_options["trt_ep_context_embed_mode"] = "1";
       // We need the batch size as well as the hash, as it is set after loading.
       std::ostringstream oss;
       oss << std::hex << hash;
@@ -701,7 +710,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_timing_cache_path"] = cache_dir;
       trt_options["trt_layer_norm_fp32_fallback"] = "1";
       trt_options["trt_force_sequential_engine_build"] = "1";
-      trt_options["trt_context_memory_sharing_enable"] = "1";
+      trt_options["trt_context_memory_sharing_enable"] = is_ep_context_ ? "0" : "1";
       // Looks like we need I/O binding to enable this.
 #ifdef USE_ONNX_CUDART
       trt_options["has_user_compute_stream"] = "1";
@@ -896,6 +905,10 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     mlh_head_ = outputs_.size();
     outputs_.emplace_back(md.output_mlh());
   }
+
+  cache_dir_ = (std::filesystem::path(CommandLine::BinaryDirectory()) / "trt_cache").string();
+  is_ep_context_ = md.is_ep_context();
+
   uint64_t hash = 0;
   if (provider == OnnxProvider::TRT) {
     hash = std::hash<std::string_view>()(md.model());
@@ -916,10 +929,68 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       break;
   }
 
-  for (int step = 1; step <= steps_; step++)
-    session_.emplace_back(onnx_env_, file.onnx_model().model().data(),
-                          file.onnx_model().model().size(),
+  for (int step = 1; step <= steps_; step++) {
+    if (provider_ == OnnxProvider::TRT && is_ep_context_) {
+      std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
+      
+      {
+        std::ofstream f(ctx_path, std::ios::binary);
+        f.write(file.onnx_model().model().data(), file.onnx_model().model().size());
+      } 
+
+      Ort::Session sess(onnx_env_, ctx_path.c_str(),
+                        GetOptions(threads, batch_size_ * step, hash, optimize));
+      session_.push_back(std::move(sess));
+    } else {
+      session_.emplace_back(onnx_env_, file.onnx_model().model().data(),
+                        file.onnx_model().model().size(),
                           GetOptions(threads, batch_size_ * step, hash, optimize));
+    }
+  }
+
+  if (provider_ == OnnxProvider::TRT && !is_ep_context_) {    
+    std::string net_path = opts.GetOrDefault<std::string>(
+        SharedBackendParams::kWeightsId, std::string());
+    if(net_path == SharedBackendParams::kAutoDiscover){
+      net_path = DiscoverWeightsFile();
+    }
+    if (!net_path.empty()) {
+      for (const std::string& suffix : {".pb.gz", ".pb"}) {
+        if (net_path.size() > suffix.size() &&
+            net_path.compare(net_path.size() - suffix.size(), suffix.size(),
+                              suffix) == 0) {
+          net_path.resize(net_path.size() - suffix.size());
+          break;
+        }
+      }
+      net_path = net_path + "-embedded.pb.gz";
+    }
+
+    std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
+    const std::string ctx = ReadFileToString(ctx_path.string());
+    pblczero::ModelProto model;
+    model.ParseFromString(ctx);
+    pblczero::Net out = file;
+    auto* md_out = out.mutable_onnx_model();
+    for (const auto& output : model.graph().output()) {
+      const auto& name = output.name();
+      if (md_out->has_output_policy() &&
+          name.find("policy") != std::string::npos) {
+        md_out->set_output_policy(name);
+      } else if (md_out->has_output_mlh() &&
+                name.find("mlh") != std::string::npos) {
+        md_out->set_output_mlh(name);
+      } else if (md_out->has_output_wdl()) {
+        md_out->set_output_wdl(name);
+      } else if (md_out->has_output_value()) {
+        md_out->set_output_value(name);
+      }
+    }
+
+    md_out->set_model(ctx);
+    md_out->set_is_ep_context(true);
+    WriteStringToGzFile(net_path, out.OutputAsString());
+  }
 }
 
 template <OnnxProvider kProvider>

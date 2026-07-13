@@ -31,6 +31,7 @@
 #include <fstream>
 #include <set>
 
+#include "neural/loader.h"
 #include "proto/net.pb.h"
 #include "proto/onnx.pb.h"
 #include "tools/describenet.h"
@@ -301,7 +302,7 @@ pblczero::OnnxModel_DataType GetDataType(pblczero::ModelProto& model,
   using pblczero::TensorProto;
   using pblczero::OnnxModel;
   for (auto& in : model.graph().input()) {
-    if (in.name() == name && in.has_type() && in.type().has_tensor_type() &&
+    if ((name.empty() || in.name() == name) && in.has_type() && in.type().has_tensor_type() &&
         in.type().tensor_type().has_elem_type()) {
       auto data_type = in.type().tensor_type().elem_type();
       switch (data_type) {
@@ -415,6 +416,13 @@ bool MaybeFixOnnx(pblczero::ModelProto& model, const OptionsDict& dict,
   return updated;
 }
 
+bool IsEpContextModel(const pblczero::ModelProto& model) {
+  for (const auto& node : model.graph().node()) {
+    if (node.op_type() == "EPContext") return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 void ConvertOnnxToLeela() {
@@ -428,6 +436,8 @@ void ConvertOnnxToLeela() {
   auto onnx_model = ReadFileToString(dict.Get<std::string>(kInputFilenameId));
   pblczero::ModelProto model;
   model.ParseFromString(onnx_model);
+
+  bool is_ctx = IsEpContextModel(model);
 
   pblczero::Net out_weights;
   out_weights.set_magic(0x1c0);
@@ -448,6 +458,9 @@ void ConvertOnnxToLeela() {
     auto in = dict.Get<std::string>(kOnnxInputId);
     onnx->set_input_planes(in);
     data_type = GetDataType(model, in);
+    if(is_ctx){
+      data_type = GetDataType(model, "");
+    }
   }
   onnx->set_data_type(data_type);
 
@@ -481,15 +494,35 @@ void ConvertOnnxToLeela() {
     onnx->set_output_mlh(dict.Get<std::string>(kOnnxOutputMlhId));
   }
 
-  if (MaybeFixOnnx(model, dict, data_type)) {
-    onnx->set_model(model.OutputAsString());
-  } else {
+  if (is_ctx) {
+    for (const auto& out : model.graph().output()) {
+      const auto& name = out.name();
+      if (onnx->has_output_policy() && name.find("policy") != std::string::npos) {
+        onnx->set_output_policy(name);
+      } else if (onnx->has_output_mlh() && name.find("mlh") != std::string::npos) {
+        onnx->set_output_mlh(name);
+      } else {
+        if (onnx->has_output_wdl()) {
+          onnx->set_output_wdl(name);
+        } else if (onnx->has_output_value()) {
+          onnx->set_output_value(name);
+        }
+      }
+    }
     onnx->set_model(onnx_model);
+    onnx->set_is_ep_context(true);
+  } else {
+    if (MaybeFixOnnx(model, dict, data_type)) {
+      onnx->set_model(model.OutputAsString());
+    } else {
+      onnx->set_model(onnx_model);
+    }
+    if (dict.Get<bool>(kValidateModelId) &&
+        !ValidateNetwork(out_weights, model)) {
+      return;
+    }
   }
-  if (dict.Get<bool>(kValidateModelId) &&
-      !ValidateNetwork(out_weights, model)) {
-    return;
-  }
+
   WriteStringToGzFile(dict.Get<std::string>(kOutputFilenameId),
                       out_weights.OutputAsString());
   ShowNetworkFormatInfo(out_weights);
