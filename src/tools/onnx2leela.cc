@@ -517,10 +517,11 @@ void ConvertOnnxToLeela() {
     } else {
       onnx->set_model(onnx_model);
     }
-    if (dict.Get<bool>(kValidateModelId) &&
-        !ValidateNetwork(out_weights, model)) {
-      return;
-    }
+  }
+  
+  if (dict.Get<bool>(kValidateModelId) &&
+      !ValidateNetwork(out_weights, model)) {
+    return;
   }
 
   WriteStringToGzFile(dict.Get<std::string>(kOutputFilenameId),
