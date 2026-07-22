@@ -302,7 +302,7 @@ pblczero::OnnxModel_DataType GetDataType(pblczero::ModelProto& model,
   using pblczero::TensorProto;
   using pblczero::OnnxModel;
   for (auto& in : model.graph().input()) {
-    if ((name.empty() || in.name() == name) && in.has_type() && in.type().has_tensor_type() &&
+    if (in.name() == name && in.has_type() && in.type().has_tensor_type() &&
         in.type().tensor_type().has_elem_type()) {
       auto data_type = in.type().tensor_type().elem_type();
       switch (data_type) {
@@ -456,10 +456,20 @@ void ConvertOnnxToLeela() {
       NetworkFormat::InputFormat_AllValues, NetworkFormat::InputFormat_Name));
   if (dict.OwnExists<std::string>(kOnnxInputId)) {
     auto in = dict.Get<std::string>(kOnnxInputId);
-    onnx->set_input_planes(in);
-    data_type = GetDataType(model, in);
-    if(is_ctx){
-      data_type = GetDataType(model, "");
+    if (is_ctx) {
+      bool found = false;
+      for (const auto& gin : model.graph().input()) {
+        if (gin.has_type() && gin.type().has_tensor_type() &&
+            gin.type().tensor_type().has_elem_type()) {
+          onnx->set_input_planes(gin.name());
+          data_type = GetDataType(model, std::string(gin.name()));
+          found = true;
+          break;
+        }
+      }
+    } else {
+      onnx->set_input_planes(in);
+      data_type = GetDataType(model, in);
     }
   }
   onnx->set_data_type(data_type);
