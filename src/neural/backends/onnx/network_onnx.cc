@@ -693,7 +693,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_max_partition_iterations"] = "1000";
       trt_options["trt_min_subgraph_size"] = "1";
       trt_options["trt_engine_cache_enable"] = "1";
-      trt_options["trt_dump_ep_context_model"] = opts.Exists<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId) ? "1" : 0;
+      trt_options["trt_dump_ep_context_model"] = "1";
       trt_options["trt_ep_context_file_path"] = cache_dir;
       trt_options["trt_ep_context_embed_mode"] = "1";
       // We need the batch size as well as the hash, as it is set after loading.
@@ -929,9 +929,10 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       break;
   }
 
+  std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
   for (int step = 1; step <= steps_; step++) {
     if (provider_ == OnnxProvider::TRT && is_ep_context_) {
-      std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
+      std::filesystem::create_directories(ctx_path.parent_path());
       
       {
         std::ofstream f(ctx_path, std::ios::binary);
@@ -951,8 +952,6 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   if (provider_ == OnnxProvider::TRT && !is_ep_context_ &&
     opts.Exists<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId)) {
     std::string net_path = opts.Get<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId);
-
-    std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
     const std::string ctx = ReadFileToString(ctx_path.string());
     pblczero::ModelProto model;
     model.ParseFromString(ctx);
@@ -976,8 +975,8 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     md_out->set_model(ctx);
     md_out->set_is_ep_context(true);
     WriteStringToGzFile(net_path, out.OutputAsString());
-    std::filesystem::remove(ctx_path);
   }
+  std::filesystem::remove(ctx_path);
 }
 
 template <OnnxProvider kProvider>
