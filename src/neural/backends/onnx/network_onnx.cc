@@ -693,7 +693,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_max_partition_iterations"] = "1000";
       trt_options["trt_min_subgraph_size"] = "1";
       trt_options["trt_engine_cache_enable"] = "1";
-      trt_options["trt_dump_ep_context_model"] = "1";
+      trt_options["trt_dump_ep_context_model"] = opts.Exists<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId) ? "1" : 0;
       trt_options["trt_ep_context_file_path"] = cache_dir;
       trt_options["trt_ep_context_embed_mode"] = "1";
       // We need the batch size as well as the hash, as it is set after loading.
@@ -948,23 +948,9 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     }
   }
 
-  if (provider_ == OnnxProvider::TRT && !is_ep_context_) {    
-    std::string net_path = opts.GetOrDefault<std::string>(
-        SharedBackendParams::kWeightsId, std::string());
-    if(net_path == SharedBackendParams::kAutoDiscover){
-      net_path = DiscoverWeightsFile();
-    }
-    if (!net_path.empty()) {
-      for (const std::string& suffix : {".pb.gz", ".pb"}) {
-        if (net_path.size() > suffix.size() &&
-            net_path.compare(net_path.size() - suffix.size(), suffix.size(),
-                              suffix) == 0) {
-          net_path.resize(net_path.size() - suffix.size());
-          break;
-        }
-      }
-      net_path = net_path + "-embedded.pb.gz";
-    }
+  if (provider_ == OnnxProvider::TRT && !is_ep_context_ &&
+    opts.Exists<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId)) {
+    std::string net_path = opts.Get<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId);
 
     std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
     const std::string ctx = ReadFileToString(ctx_path.string());
@@ -990,6 +976,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     md_out->set_model(ctx);
     md_out->set_is_ep_context(true);
     WriteStringToGzFile(net_path, out.OutputAsString());
+    std::filesystem::remove(ctx_path);
   }
 }
 

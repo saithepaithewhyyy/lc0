@@ -64,6 +64,10 @@ const OptionId SharedBackendParams::kNNCacheSizeId{
     "nncache", "NNCacheSize",
     "Number of positions to store in a memory cache. A large cache can speed "
     "up searching, but takes memory."};
+const OptionId SharedBackendParams::kDumpEmbeddedWeightsId{
+    "dump-embedded-weights", "DumpEmbeddedWeights",
+    "Path to save a weights file with the compiled TensorRT engine"
+    "embedded. Saved only when the option is set"};
 
 void SharedBackendParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kPolicySoftmaxTemp, 0.1f, 10.0f) = 1.359f;
@@ -79,6 +83,7 @@ void SharedBackendParams::Populate(OptionsParser* options) {
   options->Add<ChoiceOption>(SharedBackendParams::kBackendId, backends) =
       backends.empty() ? "<none>" : backends[0];
   options->Add<StringOption>(SharedBackendParams::kBackendOptionsId);
+  options->Add<StringOption>(SharedBackendParams::kDumpEmbeddedWeightsId);
   options->Add<IntOption>(SharedBackendParams::kNNCacheSizeId, 0, 999999999) =
       2000000;
 }
