@@ -952,29 +952,31 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   if (provider_ == OnnxProvider::TRT && !is_ep_context_ &&
     opts.Exists<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId)) {
     std::string net_path = opts.Get<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId);
-    const std::string ctx = ReadFileToString(ctx_path.string());
-    pblczero::ModelProto model;
-    model.ParseFromString(ctx);
-    pblczero::Net out = file;
-    auto* md_out = out.mutable_onnx_model();
-    for (const auto& output : model.graph().output()) {
-      const auto& name = output.name();
-      if (md_out->has_output_policy() &&
-          name.find("policy") != std::string::npos) {
-        md_out->set_output_policy(name);
-      } else if (md_out->has_output_mlh() &&
-                name.find("mlh") != std::string::npos) {
-        md_out->set_output_mlh(name);
-      } else if (md_out->has_output_wdl()) {
-        md_out->set_output_wdl(name);
-      } else if (md_out->has_output_value()) {
-        md_out->set_output_value(name);
+    if(!net_path.empty()){
+      const std::string ctx = ReadFileToString(ctx_path.string());
+      pblczero::ModelProto model;
+      model.ParseFromString(ctx);
+      pblczero::Net out = file;
+      auto* md_out = out.mutable_onnx_model();
+      for (const auto& output : model.graph().output()) {
+        const auto& name = output.name();
+        if (md_out->has_output_policy() &&
+            name.find("policy") != std::string::npos) {
+          md_out->set_output_policy(name);
+        } else if (md_out->has_output_mlh() &&
+                  name.find("mlh") != std::string::npos) {
+          md_out->set_output_mlh(name);
+        } else if (md_out->has_output_wdl()) {
+          md_out->set_output_wdl(name);
+        } else if (md_out->has_output_value()) {
+          md_out->set_output_value(name);
+        }
       }
-    }
 
-    md_out->set_model(ctx);
-    md_out->set_is_ep_context(true);
-    WriteStringToGzFile(net_path, out.OutputAsString());
+      md_out->set_model(ctx);
+      md_out->set_is_ep_context(true);
+      WriteStringToGzFile(net_path, out.OutputAsString());
+    }
   }
   std::filesystem::remove(ctx_path);
 }
