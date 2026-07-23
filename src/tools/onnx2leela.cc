@@ -505,20 +505,6 @@ void ConvertOnnxToLeela() {
   }
 
   if (is_ctx) {
-    for (const auto& out : model.graph().output()) {
-      const auto& name = out.name();
-      if (onnx->has_output_policy() && name.find("policy") != std::string::npos) {
-        onnx->set_output_policy(name);
-      } else if (onnx->has_output_mlh() && name.find("mlh") != std::string::npos) {
-        onnx->set_output_mlh(name);
-      } else {
-        if (onnx->has_output_wdl()) {
-          onnx->set_output_wdl(name);
-        } else if (onnx->has_output_value()) {
-          onnx->set_output_value(name);
-        }
-      }
-    }
     onnx->set_model(onnx_model);
     onnx->set_is_ep_context(true);
   } else {
