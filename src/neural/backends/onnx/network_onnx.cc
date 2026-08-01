@@ -913,6 +913,30 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       (std::filesystem::path(CommandLine::BinaryDirectory()) / "trt_cache")
           .string();
   bool is_ep_context = md.is_ep_context();
+
+  if (is_ep_context && provider == OnnxProvider::TRT) {
+    uint32_t stored_batch_size = md.has_trt_batch_size() ? md.trt_batch_size() : 0;
+    uint32_t stored_min_batch_size = md.has_trt_min_batch_size() ? md.trt_min_batch_size() : 0;
+    uint32_t stored_steps = md.has_trt_steps() ? md.trt_steps() : 0;
+    uint32_t requested_batch_size = batch_size_ > 0 ? batch_size_ : 0;
+    
+    if (md.has_trt_batch_size() &&
+        (stored_batch_size != requested_batch_size ||
+         stored_min_batch_size != static_cast<uint32_t>(min_batch_size_) ||
+         stored_steps != static_cast<uint32_t>(steps_))) {
+      throw Exception(
+          "The embedded TensorRT engine was built for a different "
+          "batch/steps configuration (batch=" +
+          std::to_string(stored_batch_size) +
+          ", min_batch=" + std::to_string(stored_min_batch_size) +
+          ", steps=" + std::to_string(stored_steps) +
+          ") than requested (batch=" + std::to_string(requested_batch_size) +
+          ", min_batch=" + std::to_string(min_batch_size_) +
+          ", steps=" + std::to_string(steps_) + ")." + 
+          "Eebuild the embedded TensorRT engine with the correct configuration.");
+    }
+  }
+
   uint64_t hash = 0;
   if (provider == OnnxProvider::TRT) {
     hash = std::hash<std::string_view>()(md.model());
@@ -937,42 +961,60 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
                      opts.Exists<std::string>("dump-embedded-weights") &&
                      !opts.Get<std::string>("dump-embedded-weights").empty();
 
-  std::string ctx_path;
+  std::vector<std::string> ctx_paths;
+  if (dump_weights) ctx_paths.resize(steps_);
+
+  bool multi_step_embedded = is_ep_context && md.step_models_size() > 0;
   for (int step = 1; step <= steps_; step++) {
+    std::string_view model = multi_step_embedded
+                                  ? md.step_models(step - 1)
+                                  : std::string_view(file.onnx_model().model());
     session_.emplace_back(
-        onnx_env_, file.onnx_model().model().data(),
-                        file.onnx_model().model().size(),
+        onnx_env_, model.data(), model.size(),
         GetOptions(threads, batch_size_ * step, hash, optimize,
-                  dump_weights && step == 1 ? &ctx_path : nullptr));
+                  dump_weights && !multi_step_embedded ? &ctx_paths[step - 1] : nullptr));
   }
 
   if (dump_weights) {
     std::string net_path = opts.Get<std::string>("dump-embedded-weights");
-    const std::string ctx = ReadFileToString(ctx_path);
-    pblczero::ModelProto model;
-    model.ParseFromString(ctx);
     pblczero::Net out = file;
     auto* md_out = out.mutable_onnx_model();
-    for (const auto& output : model.graph().output()) {
-      const auto& name = output.name();
-      if (name == outputs_[policy_head_]) {
-        md_out->set_output_policy(name);
-      } else if (wdl_head_ != -1 && name == outputs_[wdl_head_]) {
-        md_out->set_output_wdl(name);
-      } else if (value_head_ != -1 &&
-                name == outputs_[value_head_]) {
-        md_out->set_output_value(name);
-      } else if (mlh_head_ != -1 &&
-                name == outputs_[mlh_head_]) {
-        md_out->set_output_mlh(name);
+
+    for (int step = 1; step <= steps_; step++) {
+      const std::string ctx = ReadFileToString(ctx_paths[step - 1]);
+      pblczero::ModelProto model;
+      model.ParseFromString(ctx);
+      
+      if (step == 1) {
+        for (const auto& output : model.graph().output()) {
+          const auto& name = output.name();
+          if (name == outputs_[policy_head_]) {
+            md_out->set_output_policy(name);
+          } else if (wdl_head_ != -1 && name == outputs_[wdl_head_]) {
+            md_out->set_output_wdl(name);
+          } else if (value_head_ != -1 &&
+                    name == outputs_[value_head_]) {
+            md_out->set_output_value(name);
+          } else if (mlh_head_ != -1 &&
+                    name == outputs_[mlh_head_]) {
+            md_out->set_output_mlh(name);
+          }
+        }
+        md_out->set_model(ctx);
       }
+      md_out->add_step_models(ctx);
     }
 
-    md_out->set_model(ctx);
     md_out->set_is_ep_context(true);
+    md_out->set_trt_batch_size(batch_size_ > 0 ? batch_size_ : 0);
+    md_out->set_trt_min_batch_size(min_batch_size_);
+    md_out->set_trt_steps(steps_);
     WriteStringToGzFile(net_path, out.OutputAsString());
   }
-  std::filesystem::remove(ctx_path);
+
+  for (const auto& path : ctx_paths) {
+    if (!path.empty()) std::filesystem::remove(path);
+  }
 }
 
 template <OnnxProvider kProvider>
