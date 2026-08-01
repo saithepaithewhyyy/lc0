@@ -173,7 +173,9 @@ class OnnxNetwork final : public Network {
   }
   bool IsCpu() const override { return provider_ == OnnxProvider::CPU; }
 
-  Ort::SessionOptions GetOptions(int threads, int batch_size, uint64_t hash, int optimize);
+  Ort::SessionOptions GetOptions(int threads, int batch_size, uint64_t hash,
+                                 int optimize,
+                                 std::string* ep_context_path = nullptr);
 
   std::unique_ptr<InputsOutputs> GetInputsOutputs() {
     std::lock_guard<std::mutex> lock(inputs_outputs_lock_);
@@ -212,9 +214,6 @@ class OnnxNetwork final : public Network {
   // The lower limit for variable batch size.
   int min_batch_size_;
   int gpu_;
-  // trt cache directory and flag for trt EPcontext model
-  std::string cache_dir_;
-  bool is_ep_context_;
   static constexpr int max_batch_size_ = 1024;
   // For conditional locking if running the DML/ROCM/TRT provider.
   OnnxProvider provider_;
@@ -631,7 +630,8 @@ void OnnxComputation<DataType>::ComputeBlocking() {
 }
 
 Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
-                                            uint64_t hash, int optimize) {
+                                            uint64_t hash, int optimize,
+                                            std::string* ep_context_path) {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(threads);
   GraphOptimizationLevel level = GraphOptimizationLevel::ORT_DISABLE_ALL;
@@ -694,23 +694,26 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_min_subgraph_size"] = "1";
       trt_options["trt_engine_cache_enable"] = "1";
       trt_options["trt_dump_ep_context_model"] = "1";
-      trt_options["trt_ep_context_file_path"] = cache_dir;
       trt_options["trt_ep_context_embed_mode"] = "1";
       // We need the batch size as well as the hash, as it is set after loading.
       std::ostringstream oss;
       oss << std::hex << hash;
-      trt_options["trt_engine_cache_prefix"] =
-          "Lc0_ONNX_TRT_ORT_" + Ort::GetVersionString() + "_batch_" +
+      std::string cache_prefix =
+          "Lc0_ONNX_TRT_ORT_" + Ort::GetVersionString() + "_gpu_" +
+          std::to_string(gpu_) + "_batch_" +
           (batch_size < 0 ? std::to_string(batch_size)
                           : std::to_string(batch_size - batch_size_ + 1) + "-" +
                                 std::to_string(batch_size)) +
           "_" + std::to_string(optimize) + "_" + oss.str() + "_";
+      trt_options["trt_engine_cache_prefix"] = cache_prefix;
+      trt_options["trt_ep_context_file_path"] = cache_dir + "/" + cache_prefix + "ctx.onnx";
+      if (ep_context_path) *ep_context_path = trt_options["trt_ep_context_file_path"];
       trt_options["trt_engine_cache_path"] = cache_dir;
       trt_options["trt_timing_cache_enable"] = "1";
       trt_options["trt_timing_cache_path"] = cache_dir;
       trt_options["trt_layer_norm_fp32_fallback"] = "1";
       trt_options["trt_force_sequential_engine_build"] = "1";
-      trt_options["trt_context_memory_sharing_enable"] = is_ep_context_ ? "0" : "1";
+      trt_options["trt_context_memory_sharing_enable"] = "0";
       // Looks like we need I/O binding to enable this.
 #ifdef USE_ONNX_CUDART
       trt_options["has_user_compute_stream"] = "1";
@@ -906,9 +909,10 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     outputs_.emplace_back(md.output_mlh());
   }
 
-  cache_dir_ = (std::filesystem::path(CommandLine::BinaryDirectory()) / "trt_cache").string();
-  is_ep_context_ = md.is_ep_context();
-
+  std::string cache_dir =
+      (std::filesystem::path(CommandLine::BinaryDirectory()) / "trt_cache")
+          .string();
+  bool is_ep_context = md.is_ep_context();
   uint64_t hash = 0;
   if (provider == OnnxProvider::TRT) {
     hash = std::hash<std::string_view>()(md.model());
@@ -929,46 +933,34 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       break;
   }
 
-  std::filesystem::path ctx_path = std::filesystem::path(cache_dir_) / "_ctx.onnx";
-  for (int step = 1; step <= steps_; step++) {
-    if (provider_ == OnnxProvider::TRT && is_ep_context_) {
-      std::filesystem::create_directories(ctx_path.parent_path());
-      
-      {
-        std::ofstream f(ctx_path, std::ios::binary);
-        f.write(file.onnx_model().model().data(), file.onnx_model().model().size());
-      } 
+  bool dump_weights = provider_ == OnnxProvider::TRT && !is_ep_context &&
+                     opts.Exists<std::string>("dump-embedded-weights") &&
+                     !opts.Get<std::string>("dump-embedded-weights").empty();
 
-      Ort::Session sess(onnx_env_, ctx_path.c_str(),
-                        GetOptions(threads, batch_size_ * step, hash, optimize));
-      session_.push_back(std::move(sess));
-    } else {
-      session_.emplace_back(onnx_env_, file.onnx_model().model().data(),
+  std::string ctx_path;
+  for (int step = 1; step <= steps_; step++) {
+    session_.emplace_back(
+        onnx_env_, file.onnx_model().model().data(),
                         file.onnx_model().model().size(),
-                          GetOptions(threads, batch_size_ * step, hash, optimize));
-    }
+        GetOptions(threads, batch_size_ * step, hash, optimize,
+                  dump_weights && step == 1 ? &ctx_path : nullptr));
   }
 
-  if (provider_ == OnnxProvider::TRT && !is_ep_context_ &&
-    opts.Exists<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId)) {
-    std::string net_path = opts.Get<std::string>(SharedBackendParams::kDumpEmbeddedWeightsId);
-    if(!net_path.empty()){
-      const std::string ctx = ReadFileToString(ctx_path.string());
+  if (dump_weights) {
+    std::string net_path = opts.Get<std::string>("dump-embedded-weights");
+    const std::string ctx = ReadFileToString(ctx_path);
       pblczero::ModelProto model;
       model.ParseFromString(ctx);
       pblczero::Net out = file;
       auto* md_out = out.mutable_onnx_model();
       for (const auto& output : model.graph().output()) {
         const auto& name = output.name();
-        if (md_out->has_output_policy() &&
-            name.find("policy") != std::string::npos) {
+      if (name == outputs_[policy_head_]) {
           md_out->set_output_policy(name);
-        } else if (md_out->has_output_mlh() &&
-                  name.find("mlh") != std::string::npos) {
-          md_out->set_output_mlh(name);
-        } else if (md_out->has_output_wdl()) {
+      } else if (wdl_head_ != -1 && name == outputs_[wdl_head_]) {
           md_out->set_output_wdl(name);
-        } else if (md_out->has_output_value()) {
+      } else if (value_head_ != -1 &&
+                name == outputs_[value_head_]) {
           md_out->set_output_value(name);
         }
       }
