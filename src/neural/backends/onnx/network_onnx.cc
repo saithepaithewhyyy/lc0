@@ -933,7 +933,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
           ") than requested (batch=" + std::to_string(requested_batch_size) +
           ", min_batch=" + std::to_string(min_batch_size_) +
           ", steps=" + std::to_string(steps_) + ")." + 
-          "Eebuild the embedded TensorRT engine with the correct configuration.");
+          "Rebuild the embedded TensorRT engine with the correct configuration.");
     }
   }
 
