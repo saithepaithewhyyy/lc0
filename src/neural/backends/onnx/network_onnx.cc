@@ -949,26 +949,25 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   if (dump_weights) {
     std::string net_path = opts.Get<std::string>("dump-embedded-weights");
     const std::string ctx = ReadFileToString(ctx_path);
-      pblczero::ModelProto model;
-      model.ParseFromString(ctx);
-      pblczero::Net out = file;
-      auto* md_out = out.mutable_onnx_model();
-      for (const auto& output : model.graph().output()) {
-        const auto& name = output.name();
+    pblczero::ModelProto model;
+    model.ParseFromString(ctx);
+    pblczero::Net out = file;
+    auto* md_out = out.mutable_onnx_model();
+    for (const auto& output : model.graph().output()) {
+      const auto& name = output.name();
       if (name == outputs_[policy_head_]) {
-          md_out->set_output_policy(name);
+        md_out->set_output_policy(name);
       } else if (wdl_head_ != -1 && name == outputs_[wdl_head_]) {
-          md_out->set_output_wdl(name);
+        md_out->set_output_wdl(name);
       } else if (value_head_ != -1 &&
                 name == outputs_[value_head_]) {
-          md_out->set_output_value(name);
-        }
+        md_out->set_output_value(name);
       }
-
-      md_out->set_model(ctx);
-      md_out->set_is_ep_context(true);
-      WriteStringToGzFile(net_path, out.OutputAsString());
     }
+
+    md_out->set_model(ctx);
+    md_out->set_is_ep_context(true);
+    WriteStringToGzFile(net_path, out.OutputAsString());
   }
   std::filesystem::remove(ctx_path);
 }
