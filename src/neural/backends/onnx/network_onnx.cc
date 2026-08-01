@@ -962,6 +962,9 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       } else if (value_head_ != -1 &&
                 name == outputs_[value_head_]) {
         md_out->set_output_value(name);
+      } else if (mlh_head_ != -1 &&
+                name == outputs_[mlh_head_]) {
+        md_out->set_output_mlh(name);
       }
     }
 
