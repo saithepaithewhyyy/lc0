@@ -209,6 +209,7 @@ class OnnxNetwork final : public Network {
   bool fp16_;
   bool bf16_;
   bool cpu_wdl_;
+  bool is_ep_context_ = false;
   // The batch size to use, or -1 for variable.
   int batch_size_;
   // The lower limit for variable batch size.
@@ -713,7 +714,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_timing_cache_path"] = cache_dir;
       trt_options["trt_layer_norm_fp32_fallback"] = "1";
       trt_options["trt_force_sequential_engine_build"] = "1";
-      trt_options["trt_context_memory_sharing_enable"] = "0";
+      trt_options["trt_context_memory_sharing_enable"] = is_ep_context_ ? "0" : "1";
       // Looks like we need I/O binding to enable this.
 #ifdef USE_ONNX_CUDART
       trt_options["has_user_compute_stream"] = "1";
@@ -912,9 +913,9 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   std::string cache_dir =
       (std::filesystem::path(CommandLine::BinaryDirectory()) / "trt_cache")
           .string();
-  bool is_ep_context = md.is_ep_context();
+  is_ep_context_ = md.is_ep_context();
 
-  if (is_ep_context && provider == OnnxProvider::TRT) {
+  if (is_ep_context_ && provider == OnnxProvider::TRT) {
     uint32_t stored_batch_size = md.has_trt_batch_size() ? md.trt_batch_size() : 0;
     uint32_t stored_min_batch_size = md.has_trt_min_batch_size() ? md.trt_min_batch_size() : 0;
     uint32_t stored_steps = md.has_trt_steps() ? md.trt_steps() : 0;
@@ -957,14 +958,14 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       break;
   }
 
-  bool dump_weights = provider_ == OnnxProvider::TRT && !is_ep_context &&
+  bool dump_weights = provider_ == OnnxProvider::TRT && !is_ep_context_ &&
                      opts.Exists<std::string>("dump-embedded-weights") &&
                      !opts.Get<std::string>("dump-embedded-weights").empty();
 
   std::vector<std::string> ctx_paths;
   if (dump_weights) ctx_paths.resize(steps_);
 
-  bool multi_step_embedded = is_ep_context && md.step_models_size() > 0;
+  bool multi_step_embedded = is_ep_context_ && md.step_models_size() > 0;
   for (int step = 1; step <= steps_; step++) {
     std::string_view model = multi_step_embedded
                                   ? md.step_models(step - 1)
