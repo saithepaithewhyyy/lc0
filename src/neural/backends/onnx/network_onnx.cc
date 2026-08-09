@@ -909,10 +909,13 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     outputs_.emplace_back(md.output_mlh());
   }
 
-  std::string cache_dir =
-      (std::filesystem::path(CommandLine::BinaryDirectory()) / "trt_cache")
-          .string();
   const bool is_ep_context = md.is_ep_context();
+
+  if(is_ep_context && provider != OnnxProvider::TRT){
+    throw Exception(
+      "This network contains an embedded TensorRT engine and can only be "
+      "loaded with the onnx-trt backend.");
+  }
 
   if (is_ep_context && provider == OnnxProvider::TRT) {
     uint32_t stored_batch_size = md.has_trt_batch_size() ? md.trt_batch_size() : 0;
@@ -958,11 +961,21 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   }
 
   if (opts.Exists<std::string>("dump-embedded-weights") &&
-      !opts.Get<std::string>("dump-embedded-weights").empty() && is_ep_context) {
-    throw Exception("Cannot dump embedded weights: this network already contains an embedded TensorRT context");
+      !opts.Get<std::string>("dump-embedded-weights").empty()) {
+        if (provider != OnnxProvider::TRT){
+          throw Exception(
+            "dump-embedded-weights requires the onnx-trt backend. "
+            "Got a different backend.");
+        }
+
+        if (is_ep_context){
+          throw Exception(
+            "Cannot dump embedded weights: "
+            "this network already contains an embedded TensorRT context.");
+        }
   }
 
-  bool dump_weights = provider_ == OnnxProvider::TRT && !is_ep_context_ &&
+  bool dump_weights = provider_ == OnnxProvider::TRT && !is_ep_context &&
                      opts.Exists<std::string>("dump-embedded-weights") &&
                      !opts.Get<std::string>("dump-embedded-weights").empty();
 
