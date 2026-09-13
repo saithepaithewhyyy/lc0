@@ -715,7 +715,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       if (ep_context_path) *ep_context_path = trt_options["trt_ep_context_file_path"];
       trt_options["trt_engine_cache_path"] = cache_dir;
       trt_options["trt_timing_cache_enable"] = "1";
-      trt_options["trt_timing_cache_path"] = cache_dir;
+      trt_options["trt_timing_cache_path"] = CommandLine::BinaryDirectory() + "/trt_cache";
       trt_options["trt_layer_norm_fp32_fallback"] = "1";
       trt_options["trt_force_sequential_engine_build"] = "1";
       trt_options["trt_context_memory_sharing_enable"] = is_ep_context ? "0" : "1";
