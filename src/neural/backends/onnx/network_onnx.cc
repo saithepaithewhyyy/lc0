@@ -762,7 +762,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
         for (const auto& entry : std::filesystem::directory_iterator(cache_dir)) {
           if (entry.is_regular_file()) {
             const auto& filename = entry.path().filename().string();
-            if (filename.find(cache_prefix) == 0) {
+            if (filename.starts_with(cache_prefix)) {
               std::filesystem::remove(entry.path());
             }
           }
